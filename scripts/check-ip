@@ -1,0 +1,113 @@
+#!/bin/bash
+# VPS Sentinel - Comprehensive IP Investigation
+
+CONF="/etc/sentinel/sentinel.conf"
+[ -f "$CONF" ] && source "$CONF" || { echo "Config not found: $CONF"; exit 1; }
+
+if [ -z "$1" ]; then
+    echo "Usage: check-ip <IP_ADDRESS>"
+    exit 1
+fi
+
+IP="$1"
+
+echo "======================================================================="
+echo "         IP INVESTIGATION: $IP"
+echo "======================================================================="
+echo ""
+
+# Check if currently blocked
+echo "  CURRENT STATUS:"
+if sudo iptables -L INPUT -n | grep -q "$IP"; then
+    echo "   BLOCKED in iptables"
+else
+    echo "   NOT blocked in iptables"
+fi
+
+if sudo fail2ban-client banned 2>/dev/null | grep -q "$IP"; then
+    echo "   BANNED by fail2ban"
+else
+    echo "   NOT banned by fail2ban"
+fi
+echo ""
+
+# Check security logs
+echo "  SECURITY LOGS:"
+BLOCKS=$(sudo grep "$IP" "$BLOCKED_LOG" 2>/dev/null)
+if [ -n "$BLOCKS" ]; then
+    echo "$BLOCKS" | tail -5
+else
+    echo "   No blocks recorded in security log"
+fi
+echo ""
+
+# Check fail2ban logs
+echo "  FAIL2BAN ACTIVITY:"
+F2B=$(sudo grep "$IP" "$F2B_LOG" 2>/dev/null | tail -5)
+if [ -n "$F2B" ]; then
+    echo "$F2B"
+else
+    echo "   No fail2ban activity found"
+fi
+echo ""
+
+# SSH attempts
+echo "  SSH ATTEMPTS:"
+SSH_COUNT=$(sudo grep "$IP" "$AUTH_LOG" 2>/dev/null | grep -E "Failed|Invalid|Refused" | wc -l)
+if [ "$SSH_COUNT" -gt 0 ]; then
+    echo "   Total failed attempts: $SSH_COUNT"
+    echo "   Last 3 attempts:"
+    sudo grep "$IP" "$AUTH_LOG" | grep -E "Failed|Invalid|Refused" | tail -3
+else
+    echo "   No SSH attacks found"
+fi
+echo ""
+
+# Web activity summary
+echo "  WEB ACTIVITY SUMMARY:"
+TOTAL_REQUESTS=0
+if [ -f "$NGINX_LOG" ]; then
+    TOTAL_REQUESTS=$(sudo grep "$IP" "$NGINX_LOG" 2>/dev/null | wc -l)
+    echo "   Total requests: $TOTAL_REQUESTS"
+
+    if [ "$TOTAL_REQUESTS" -gt 0 ]; then
+        echo "   Request breakdown:"
+        sudo grep "$IP" "$NGINX_LOG" | awk '{print $7}' | cut -d'?' -f1 | sort | uniq -c | sort -nr | head -10
+
+        echo ""
+        echo "   Timeframe:"
+        FIRST=$(sudo grep "$IP" "$NGINX_LOG" | head -1 | awk '{print $4}' | tr -d '[')
+        LAST=$(sudo grep "$IP" "$NGINX_LOG" | tail -1 | awk '{print $4}' | tr -d '[')
+        echo "   First seen: $FIRST"
+        echo "   Last seen:  $LAST"
+    fi
+else
+    echo "   No web access logs found"
+fi
+echo ""
+
+# Malicious patterns
+echo "  MALICIOUS PATTERNS DETECTED:"
+PATTERNS=$(sudo grep "$IP" "$NGINX_LOG" 2>/dev/null | grep -E "(\.env|\.git|wp-admin|\.sql|\.bak|config\.js|\.aws)" | wc -l)
+if [ "$PATTERNS" -gt 0 ]; then
+    echo "   Found $PATTERNS requests for sensitive files:"
+    sudo grep "$IP" "$NGINX_LOG" | grep -E "(\.env|\.git|wp-admin|\.sql|\.bak|config\.js|\.aws)" | awk '{print $7}' | sort | uniq -c
+else
+    echo "   No malicious patterns found"
+fi
+echo ""
+
+# Rate analysis
+echo "  RATE ANALYSIS:"
+if [ "$TOTAL_REQUESTS" -gt 0 ]; then
+    MAX_PER_MIN=$(sudo grep "$IP" "$NGINX_LOG" 2>/dev/null | awk '{print $4}' | cut -d':' -f1-3 | tr -d '[' | sort | uniq -c | sort -nr | head -1)
+    echo "   Peak activity: $MAX_PER_MIN"
+fi
+echo ""
+
+echo "======================================================================="
+echo "  QUICK ACTIONS:"
+echo "   Block:   sudo iptables -I INPUT -s $IP -j DROP"
+echo "   Unblock: sudo iptables -D INPUT -s $IP -j DROP"
+echo "            sudo fail2ban-client unban $IP --all"
+echo "======================================================================="

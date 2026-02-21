@@ -1,0 +1,11 @@
+[Unit]
+Description=Run VPS Sentinel security monitor every 15 minutes
+Requires=sentinel.service
+
+[Timer]
+OnBootSec=5min
+OnCalendar=*:0/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target

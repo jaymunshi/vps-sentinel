@@ -1,0 +1,34 @@
+#!/bin/bash
+# VPS Sentinel - Top Pages Today
+
+CONF="/etc/sentinel/sentinel.conf"
+[ -f "$CONF" ] && source "$CONF" || { echo "Config not found: $CONF"; exit 1; }
+
+echo "======================================================================="
+echo "         TOP PAGES TODAY"
+echo "======================================================================="
+echo ""
+
+DATE_LOG=$(date +%d/%b/%Y)
+
+echo "  Most Visited Pages:"
+echo "-----------------------------------------------------------------------"
+grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | \
+    grep -vE "$WHITELIST_PATTERN" | \
+    awk '{print $7}' | grep "^/" | \
+    sort | uniq -c | sort -rn | head -20 | \
+    awk '{printf "%4d views - %s\n", $1, $2}'
+
+echo ""
+echo "  Top Directories:"
+echo "-----------------------------------------------------------------------"
+grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | \
+    grep -vE "$WHITELIST_PATTERN" | \
+    awk '{print $7}' | grep "^/" | \
+    sed 's|/[^/]*$||' | \
+    grep -v "^$" | \
+    sort | uniq -c | sort -rn | head -10 | \
+    awk '{printf "%4d hits - %s/\n", $1, $2}'
+
+echo ""
+echo "======================================================================="

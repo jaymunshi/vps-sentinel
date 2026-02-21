@@ -1,0 +1,63 @@
+#!/bin/bash
+# VPS Sentinel - Live Session Monitor
+
+CONF="/etc/sentinel/sentinel.conf"
+[ -f "$CONF" ] && source "$CONF" || { echo "Config not found: $CONF"; exit 1; }
+
+echo "======================================================================="
+echo "         LIVE SESSION MONITOR"
+echo "======================================================================="
+echo ""
+echo "Watching for new sessions (Ctrl+C to stop)..."
+echo "-----------------------------------------------------------------------"
+printf "%-8s %-2s %-15s %-4s %-6s %s\n" "Time" "" "IP" "Code" "Size" "URL"
+echo "-----------------------------------------------------------------------"
+
+is_whitelisted() {
+    [[ " $WHITELIST " =~ " $1 " ]]
+}
+
+get_country() {
+    local ip=$1
+    local cache_file="/tmp/sentinel_cc_$ip"
+    if [ -f "$cache_file" ] && [ "$(find "$cache_file" -mmin -60 2>/dev/null)" ]; then
+        cat "$cache_file"
+    else
+        country=$(curl -s --max-time 2 "https://ipinfo.io/$ip/country" 2>/dev/null | tr -d '\n')
+        [ -z "$country" ] && country="??"
+        echo "$country" > "$cache_file"
+        echo "$country"
+    fi
+}
+
+tail -f "$NGINX_LOG" | while read line; do
+    IP=$(echo "$line" | awk '{print $1}')
+    [ -z "$IP" ] && continue
+
+    # Skip whitelisted
+    is_whitelisted "$IP" && continue
+
+    TIME=$(echo "$line" | awk '{print $4}' | cut -d: -f2-4 | tr -d ']')
+    CODE=$(echo "$line" | awk '{print $9}')
+    SIZE=$(echo "$line" | awk '{print $10}')
+    URL=$(echo "$line" | awk '{print $7}' | cut -c1-40)
+
+    if [[ "$CODE" =~ ^4 ]]; then
+        ICON="!!"
+    elif [[ "$CODE" =~ ^5 ]]; then
+        ICON="XX"
+    elif [[ "$CODE" == "200" ]]; then
+        ICON="OK"
+    else
+        ICON="??"
+    fi
+
+    # Check for bot attacks
+    if echo "$line" | grep -qE "\.php|admin|wp-|shell|cmd|\.env"; then
+        ICON="**"
+        COUNTRY=$(get_country "$IP")
+        printf "%-8s %s %-15s [%s] %-4s %-6s %s\n" "$TIME" "$ICON" "$IP" "$COUNTRY" "$CODE" "$SIZE" "$URL"
+    else
+        printf "%-8s %s %-15s %-4s %-6s %s\n" "$TIME" "$ICON" "$IP" "$CODE" "$SIZE" "$URL"
+    fi
+done

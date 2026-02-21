@@ -1,0 +1,72 @@
+#!/bin/bash
+# VPS Sentinel - Security Alerts (Last Hour)
+
+CONF="/etc/sentinel/sentinel.conf"
+[ -f "$CONF" ] && source "$CONF" || { echo "Config not found: $CONF"; exit 1; }
+
+echo "======================================================================="
+echo "         SECURITY ALERTS - LAST HOUR"
+echo "======================================================================="
+echo ""
+
+CURRENT_HOUR=$(date '+%d/%b/%Y:%H')
+LAST_HOUR=$(date -d '1 hour ago' '+%d/%b/%Y:%H' 2>/dev/null || date -v-1H '+%d/%b/%Y:%H' 2>/dev/null)
+
+echo "  SUSPICIOUS REQUESTS:"
+echo "-----------------------------------------------------------------------"
+
+grep -E "$CURRENT_HOUR|$LAST_HOUR" "$NGINX_LOG" 2>/dev/null | \
+    grep -vE "$WHITELIST_PATTERN" | \
+    grep -E "admin|wp-|shell|cmd|exec|\.env|\.git|SELECT|UNION|<script>|boaform|cgi-bin" | \
+    while read line; do
+        IP=$(echo "$line" | awk '{print $1}')
+        TIME=$(echo "$line" | awk '{print $4}' | cut -d: -f2,3,4 | tr -d ']')
+        URL=$(echo "$line" | awk '{print $7}' | cut -c1-50)
+        STATUS=$(echo "$line" | awk '{print $9}')
+
+        if iptables -L -n 2>/dev/null | grep -q "$IP"; then
+            BLOCKED="BLOCKED"
+        else
+            BLOCKED="ACTIVE"
+        fi
+
+        printf "[%s] %-15s %-10s %s (%s)\n" "$TIME" "$IP" "$BLOCKED" "$URL" "$STATUS"
+    done
+
+echo ""
+echo "  FAILED AUTHENTICATIONS:"
+echo "-----------------------------------------------------------------------"
+
+grep "$(date '+%b %e %H')" "$AUTH_LOG" 2>/dev/null | \
+    grep "Failed password" | tail -5 | \
+    while read line; do
+        TIME=$(echo "$line" | awk '{print $3}')
+        IP=$(echo "$line" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}')
+        USER=$(echo "$line" | grep -oE 'for (invalid user )?[^ ]+' | awk '{print $NF}')
+
+        if iptables -L -n 2>/dev/null | grep -q "$IP"; then
+            BLOCKED="BLOCKED"
+        else
+            BLOCKED="WATCHING"
+        fi
+
+        printf "[%s] %-15s %-10s Attempted user: %s\n" "$TIME" "$IP" "$BLOCKED" "$USER"
+    done
+
+echo ""
+echo "  SUMMARY:"
+echo "-----------------------------------------------------------------------"
+TOTAL_SUSPICIOUS=$(grep -E "$CURRENT_HOUR|$LAST_HOUR" "$NGINX_LOG" 2>/dev/null | \
+    grep -vE "$WHITELIST_PATTERN" | \
+    grep -cE "admin|wp-|shell|cmd|exec|\.env|\.git|SELECT|UNION|<script>|boaform|cgi-bin")
+TOTAL_404=$(grep -E "$CURRENT_HOUR|$LAST_HOUR" "$NGINX_LOG" 2>/dev/null | \
+    grep -vE "$WHITELIST_PATTERN" | grep -c '" 404 ')
+TOTAL_BLOCKED=$(grep "$(date '+%Y-%m-%d %H')" "$BLOCKED_LOG" 2>/dev/null | wc -l)
+
+echo "  Suspicious requests: $TOTAL_SUSPICIOUS"
+echo "  404 errors: $TOTAL_404"
+echo "  IPs blocked this hour: $TOTAL_BLOCKED"
+echo "  Total blocked IPs: $(iptables -L -n 2>/dev/null | grep -c "DROP")"
+echo ""
+echo "  Run 'srun' to manually scan and block threats"
+echo "======================================================================="

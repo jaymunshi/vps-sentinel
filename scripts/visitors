@@ -1,0 +1,17 @@
+#!/bin/bash
+# VPS Sentinel - Quick Visitor Summary
+
+CONF="/etc/sentinel/sentinel.conf"
+[ -f "$CONF" ] && source "$CONF" || { echo "Config not found: $CONF"; exit 1; }
+
+DATE_LOG=$(date +%d/%b/%Y)
+VISITORS=$(grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | grep -vE "$WHITELIST_PATTERN" | awk '{print $1}' | sort -u | wc -l)
+REQUESTS=$(grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | grep -vE "$WHITELIST_PATTERN" | wc -l)
+
+echo "  Today's Traffic Summary:"
+echo "   Unique visitors: $VISITORS"
+echo "   Total requests: $REQUESTS"
+if [ "$VISITORS" -gt 0 ]; then
+    AVG=$((REQUESTS / VISITORS))
+    echo "   Average requests per visitor: $AVG"
+fi

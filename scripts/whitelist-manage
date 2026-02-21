@@ -1,0 +1,85 @@
+#!/bin/bash
+# VPS Sentinel - Whitelist Manager
+# BUG FIX: Now manages whitelist via sentinel.conf instead of sed'ing the monitor script
+
+CONF="/etc/sentinel/sentinel.conf"
+[ -f "$CONF" ] && source "$CONF" || { echo "Config not found: $CONF"; exit 1; }
+
+show_whitelist() {
+    echo "  Current Whitelist:"
+    echo "-----------------------------------------------------------------------"
+    for ip in $WHITELIST; do
+        echo "  $ip"
+    done
+    echo "-----------------------------------------------------------------------"
+}
+
+add_ip() {
+    local ip=$1
+    if [[ " $WHITELIST " =~ " $ip " ]]; then
+        echo "  IP $ip is already whitelisted"
+        return
+    fi
+
+    # Append to TRUSTED_IPS in config
+    if grep -q '^TRUSTED_IPS=' "$CONF"; then
+        local current=$(grep '^TRUSTED_IPS=' "$CONF" | cut -d'"' -f2)
+        if [ -z "$current" ]; then
+            sudo sed -i "s/^TRUSTED_IPS=\"\"/TRUSTED_IPS=\"$ip\"/" "$CONF"
+        else
+            sudo sed -i "s/^TRUSTED_IPS=\"$current\"/TRUSTED_IPS=\"$current $ip\"/" "$CONF"
+        fi
+    fi
+
+    echo "  Added $ip to whitelist"
+
+    # Unblock if currently blocked
+    sudo iptables -D INPUT -s "$ip" -j DROP 2>/dev/null && echo "  Removed existing block"
+    sudo fail2ban-client unban "$ip" --all 2>/dev/null
+}
+
+remove_ip() {
+    local ip=$1
+    if ! grep -q "$ip" "$CONF"; then
+        echo "  IP $ip was not in whitelist"
+        return
+    fi
+
+    # Remove from TRUSTED_IPS in config
+    sudo sed -i "s/ $ip//" "$CONF"
+    sudo sed -i "s/$ip //" "$CONF"
+    sudo sed -i "s/^TRUSTED_IPS=\"$ip\"/TRUSTED_IPS=\"\"/" "$CONF"
+    echo "  Removed $ip from whitelist"
+}
+
+case "$1" in
+    show|list)
+        show_whitelist
+        ;;
+    add)
+        if [ -z "$2" ]; then
+            echo "Usage: whitelist-manage add <IP>"
+            exit 1
+        fi
+        add_ip "$2"
+        show_whitelist
+        ;;
+    remove)
+        if [ -z "$2" ]; then
+            echo "Usage: whitelist-manage remove <IP>"
+            exit 1
+        fi
+        remove_ip "$2"
+        show_whitelist
+        ;;
+    *)
+        echo "Whitelist Manager"
+        echo "-----------------------------------------------------------------------"
+        echo "Usage:"
+        echo "  whitelist-manage show           - Show current whitelist"
+        echo "  whitelist-manage add <IP>       - Add IP to whitelist"
+        echo "  whitelist-manage remove <IP>    - Remove IP from whitelist"
+        echo ""
+        show_whitelist
+        ;;
+esac

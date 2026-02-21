@@ -1,0 +1,19 @@
+#!/bin/bash
+# VPS Sentinel - Fail2ban Summary
+
+echo "======================================================================="
+echo "         FAIL2BAN SUMMARY"
+echo "======================================================================="
+echo ""
+
+for jail in $(fail2ban-client status 2>/dev/null | grep "Jail list" | sed 's/.*://;s/,//g'); do
+    STATUS=$(fail2ban-client status "$jail" 2>/dev/null | grep -E "Currently banned|Total banned" | awk '{print $NF}' | tr '\n' '/')
+    CURRENT=$(echo "$STATUS" | cut -d'/' -f1)
+    TOTAL=$(echo "$STATUS" | cut -d'/' -f2)
+    if [ "${CURRENT:-0}" -gt 0 ] || [ "${TOTAL:-0}" -gt 0 ]; then
+        printf "%-25s Current: %-4s Total: %-6s\n" "$jail:" "$CURRENT" "$TOTAL"
+    fi
+done
+
+echo ""
+echo "Total IPs currently banned: $(fail2ban-client banned 2>/dev/null | wc -l)"

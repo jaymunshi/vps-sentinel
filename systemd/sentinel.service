@@ -1,0 +1,9 @@
+[Unit]
+Description=VPS Sentinel Security Monitor
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/sentinel-monitor.sh
+StandardOutput=journal
+StandardError=journal

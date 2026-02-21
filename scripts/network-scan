@@ -1,0 +1,152 @@
+#!/bin/bash
+# VPS Sentinel - Network Security Scanner
+# BUG FIX: Uses curl -4 to avoid IPv6 display issue
+
+CONF="/etc/sentinel/sentinel.conf"
+[ -f "$CONF" ] && source "$CONF" || { echo "Config not found: $CONF"; exit 1; }
+
+[ -t 1 ] && clear
+
+PUBLIC_IP="${SERVER_IP:-$(curl -4 -s --max-time 5 ifconfig.me 2>/dev/null || echo "Unable to detect")}"
+
+echo "======================================================================="
+echo "         NETWORK SECURITY SCAN"
+echo "======================================================================="
+echo ""
+echo "Generated: $(date)"
+echo "Server: $(hostname) | IP: $PUBLIC_IP"
+echo ""
+
+echo "  NETWORK INTERFACES & CONFIGURATION"
+echo "-----------------------------------------------------------------------"
+
+echo "  Active Network Interfaces:"
+ip addr show 2>/dev/null | grep -A 3 "state UP" | grep -E "(^[0-9]|inet )" | while read line; do
+    if [[ $line =~ ^[0-9] ]]; then
+        interface=$(echo "$line" | awk '{print $2}' | tr -d ':')
+        echo "  Interface: $interface"
+    elif [[ $line =~ inet ]]; then
+        ip=$(echo "$line" | awk '{print $2}')
+        echo "    IP: $ip"
+    fi
+done
+
+echo ""
+echo "  Network Statistics:"
+for interface in $(ip link show 2>/dev/null | grep -oP '^\d+: \K[^:]+' | grep -v lo); do
+    if [[ -d "/sys/class/net/$interface/statistics" ]]; then
+        rx_bytes=$(cat "/sys/class/net/$interface/statistics/rx_bytes" 2>/dev/null || echo 0)
+        tx_bytes=$(cat "/sys/class/net/$interface/statistics/tx_bytes" 2>/dev/null || echo 0)
+        rx_mb=$((rx_bytes / 1024 / 1024))
+        tx_mb=$((tx_bytes / 1024 / 1024))
+        echo "  $interface: RX: ${rx_mb}MB | TX: ${tx_mb}MB"
+    fi
+done
+
+echo ""
+echo "  PORT ANALYSIS & EXPOSURE"
+echo "-----------------------------------------------------------------------"
+
+echo "  Listening Services:"
+printf "  %-8s %-6s %-20s %s\n" "Port" "Proto" "Service" "Process"
+
+ss -tulnp 2>/dev/null | grep LISTEN | while read line; do
+    proto=$(echo "$line" | awk '{print $1}')
+    address=$(echo "$line" | awk '{print $5}')
+    process=$(echo "$line" | awk '{print $7}' | cut -d'"' -f2 | cut -d',' -f1)
+    port=$(echo "$address" | rev | cut -d':' -f1 | rev)
+    bind_ip=$(echo "$address" | rev | cut -d':' -f2- | rev)
+
+    case $port in
+        22) service="SSH" ;; 80) service="HTTP" ;; 443) service="HTTPS" ;;
+        25) service="SMTP" ;; 53) service="DNS" ;; 3306) service="MySQL" ;;
+        5432) service="PostgreSQL" ;; *) service="Unknown" ;;
+    esac
+
+    security_note=""
+    if [[ "$bind_ip" == "0.0.0.0" ]] || [[ "$bind_ip" == "::" ]]; then
+        case $port in
+            3306|5432|27017|6379|11211) security_note=" [EXPOSED]" ;;
+            8080|8000|3000|4000) security_note=" [DEV PORT]" ;;
+        esac
+    fi
+
+    printf "  %-8s %-6s %-20s %s%s\n" "$port" "$proto" "$service" "$process" "$security_note"
+done
+
+echo ""
+echo "  SSL/TLS SECURITY AUDIT"
+echo "-----------------------------------------------------------------------"
+
+if ss -tuln 2>/dev/null | grep -q ":443 "; then
+    echo "  SSL Certificate Information:"
+    cert_info=$(echo | openssl s_client -connect localhost:443 -servername "$(hostname)" 2>/dev/null | openssl x509 -noout -dates -subject 2>/dev/null)
+    if [[ -n "$cert_info" ]]; then
+        echo "$cert_info" | while read line; do
+            if [[ $line =~ notAfter ]]; then
+                expire_date=$(echo "$line" | cut -d'=' -f2)
+                echo "  Expires: $expire_date"
+                expire_epoch=$(date -d "$expire_date" +%s 2>/dev/null)
+                current_epoch=$(date +%s)
+                if [[ -n "$expire_epoch" ]]; then
+                    days_left=$(( (expire_epoch - current_epoch) / 86400 ))
+                    if [[ $days_left -lt 7 ]]; then
+                        echo "  Certificate expires in $days_left days!"
+                    elif [[ $days_left -lt 30 ]]; then
+                        echo "  Certificate expires in $days_left days"
+                    else
+                        echo "  Certificate valid for $days_left more days"
+                    fi
+                fi
+            fi
+        done
+    fi
+else
+    echo "  HTTPS not configured or not listening on port 443"
+fi
+
+echo ""
+echo "  ACTIVE CONNECTIONS ANALYSIS"
+echo "-----------------------------------------------------------------------"
+total_connections=$(ss -tan 2>/dev/null | grep ESTAB | wc -l)
+total_listening=$(ss -tln 2>/dev/null | grep LISTEN | wc -l)
+echo "  Active Connections: $total_connections"
+echo "  Listening Services: $total_listening"
+
+echo ""
+echo "  Top Connected IPs:"
+printf "  %-18s %-12s %s\n" "IP Address" "Connections" "Notes"
+ss -tan 2>/dev/null | grep ESTAB | awk '{print $5}' | cut -d':' -f1 | sort | uniq -c | sort -rn | head -10 | while read count ip; do
+    [[ "$ip" =~ ^(127\.|10\.|172\.|192\.168\.) ]] && continue
+    if iptables -L -n 2>/dev/null | grep -q "$ip.*DROP"; then
+        notes="BLOCKED"
+    else
+        notes="Active"
+    fi
+    printf "  %-18s %-12s %s\n" "$ip" "$count" "$notes"
+done
+
+echo ""
+echo "  PERFORMANCE & CAPACITY"
+echo "-----------------------------------------------------------------------"
+max_files=$(ulimit -n)
+current_connections=$(ss -tan 2>/dev/null | wc -l)
+connection_usage=$((current_connections * 100 / max_files))
+echo "  Connection Usage: $current_connections / $max_files ($connection_usage%)"
+
+syn_recv=$(ss -tan 2>/dev/null | grep SYN-RECV | wc -l)
+time_wait=$(ss -tan 2>/dev/null | grep TIME_WAIT | wc -l)
+echo "  TIME_WAIT: $time_wait | SYN_RECV: $syn_recv"
+[[ $syn_recv -gt 100 ]] && echo "  High SYN_RECV count - possible SYN flood!"
+
+echo ""
+echo "  SECURITY STATUS"
+echo "-----------------------------------------------------------------------"
+iptables -L INPUT 2>/dev/null | grep -q DROP && echo "  Firewall is active" || echo "  Firewall may not be configured"
+systemctl is-active --quiet fail2ban 2>/dev/null && echo "  Fail2ban is running" || echo "  Fail2ban is not running"
+grep -q "PasswordAuthentication yes" /etc/ssh/sshd_config 2>/dev/null && echo "  SSH password auth enabled (consider disabling)"
+grep -q "PermitRootLogin yes" /etc/ssh/sshd_config 2>/dev/null && echo "  SSH root login enabled (consider disabling)"
+
+echo ""
+echo "Network scan completed: $(date)"
+echo "======================================================================="

@@ -1,0 +1,28 @@
+#!/bin/bash
+# VPS Sentinel - Live Visitor Watch
+
+CONF="/etc/sentinel/sentinel.conf"
+[ -f "$CONF" ] && source "$CONF" || { echo "Config not found: $CONF"; exit 1; }
+
+echo "  Watching for visitors (Ctrl+C to stop)..."
+[ -n "$MY_IP" ] && echo "  Excluding your IP: $MY_IP"
+echo "======================================================================="
+
+tail -f "$NGINX_LOG" | \
+    grep -vE "$WHITELIST_PATTERN" | \
+    while read line; do
+        IP=$(echo "$line" | awk '{print $1}')
+        TIME=$(echo "$line" | awk '{print $4}' | tr -d '[')
+        METHOD=$(echo "$line" | awk '{print $6}' | tr -d '"')
+        URL=$(echo "$line" | awk '{print $7}')
+        STATUS=$(echo "$line" | awk '{print $9}')
+        AGENT=$(echo "$line" | cut -d'"' -f6 | cut -c1-50)
+
+        if [[ "$STATUS" == "200" ]]; then
+            echo "[$TIME] $IP -> $METHOD $URL ($AGENT...)"
+        elif [[ "$STATUS" == "404" ]]; then
+            echo "[$TIME] $IP -> $URL (404 NOT FOUND)"
+        else
+            echo "[$TIME] $IP -> $METHOD $URL (Status: $STATUS)"
+        fi
+    done

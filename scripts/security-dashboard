@@ -1,0 +1,149 @@
+#!/bin/bash
+# VPS Sentinel - Full Security Dashboard
+
+CONF="/etc/sentinel/sentinel.conf"
+[ -f "$CONF" ] && source "$CONF" || { echo "Config not found: $CONF"; exit 1; }
+
+[ -t 1 ] && clear
+
+echo "======================================================================="
+echo "         ${PROJECT_NAME} - SECURITY DASHBOARD"
+echo "======================================================================="
+echo ""
+echo "  $(date '+%Y-%m-%d %H:%M:%S')"
+echo ""
+
+# Protection Status
+echo "  PROTECTION STATUS"
+echo "-----------------------------------------------------------------------"
+BLOCKED_IPS=$(iptables -L -n 2>/dev/null | grep -c "DROP")
+F2B_BANS=$(fail2ban-client status sshd 2>/dev/null | grep "Currently banned" | awk '{print $NF}')
+TODAY_BLOCKS=$(grep "$(date '+%Y-%m-%d')" "$BLOCKED_LOG" 2>/dev/null | wc -l)
+LAST_SCAN=$(grep "completed" "$SENTINEL_LOG" 2>/dev/null | tail -1 | awk '{print $1, $2}' | tr -d '[]')
+
+printf "  %-25s : %s\n" "Total Blocked IPs" "$BLOCKED_IPS"
+printf "  %-25s : %s\n" "Fail2ban Active Bans" "${F2B_BANS:-0}"
+printf "  %-25s : %s\n" "Blocked Today" "$TODAY_BLOCKS"
+printf "  %-25s : %s\n" "Last Security Scan" "${LAST_SCAN:-Never}"
+echo ""
+
+# Current Threats with Geolocation
+echo "  RECENT THREATS (Last Hour)"
+echo "-----------------------------------------------------------------------"
+CURRENT_HOUR=$(date '+%d/%b/%Y:%H')
+THREATS=$(grep "$CURRENT_HOUR" "$NGINX_LOG" 2>/dev/null | \
+    grep -E "admin|wp-|shell|cmd|\.env|boaform|cgi-bin|luci" | wc -l)
+ERRORS=$(grep "$CURRENT_HOUR" "$NGINX_LOG" 2>/dev/null | \
+    grep -c '" 4[0-9][0-9] ')
+
+printf "  %-25s : %s\n" "Suspicious Requests" "$THREATS"
+printf "  %-25s : %s\n" "4xx Errors" "$ERRORS"
+
+# Recent blocks with locations
+echo ""
+echo "  Latest Blocks:"
+tail -3 "$BLOCKED_LOG" 2>/dev/null | while read line; do
+    TIME=$(echo "$line" | cut -d']' -f1 | cut -d' ' -f2)
+    IP=$(echo "$line" | awk -F': ' '{print $2}' | awk '{print $1}')
+    REASON=$(echo "$line" | cut -d'|' -f2 | sed 's/Reason: //' | cut -d'-' -f1)
+    LOCATION=$(geoiplookup "$IP" 2>/dev/null | cut -d: -f2 | sed 's/^ //' | cut -d, -f2 | sed 's/^ //')
+    printf "    %s %-15s %-15s %s\n" "$TIME" "$IP" "${LOCATION:-Unknown}" "$REASON"
+done
+echo ""
+
+# Recent suspicious IPs with geolocation
+echo "  SUSPICIOUS IPS (Last Hour) WITH LOCATIONS"
+echo "-----------------------------------------------------------------------"
+grep "$CURRENT_HOUR" "$NGINX_LOG" 2>/dev/null | \
+    grep '" 4[04][04] ' | awk '{print $1}' | sort -u | head -5 | while read ip; do
+    [[ " $WHITELIST " =~ " $ip " ]] && continue
+    LOCATION=$(geoiplookup "$ip" 2>/dev/null | cut -d: -f2 | sed 's/^ //')
+    COUNT=$(grep "$CURRENT_HOUR" "$NGINX_LOG" | grep -c "$ip")
+    printf "  %-15s %-30s (%d requests)\n" "$ip" "${LOCATION:-Unknown}" "$COUNT"
+done
+echo ""
+
+# Traffic Summary
+echo "  TRAFFIC OVERVIEW"
+echo "-----------------------------------------------------------------------"
+DATE_LOG=$(date +%d/%b/%Y)
+if [ -n "$WHITELIST_PATTERN" ]; then
+    VISITORS=$(grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | grep -vE "$WHITELIST_PATTERN" | awk '{print $1}' | sort -u | wc -l)
+    REQUESTS=$(grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | grep -vE "$WHITELIST_PATTERN" | wc -l)
+    HUMAN_VISITORS=$(grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | \
+        grep -vE "$WHITELIST_PATTERN" | \
+        awk -F'"' '{print $6}' | \
+        grep -v "bot\|crawler\|spider\|scan" | \
+        grep -v "^-$" | wc -l)
+else
+    VISITORS=$(grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | awk '{print $1}' | sort -u | wc -l)
+    REQUESTS=$(grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | wc -l)
+    HUMAN_VISITORS=0
+fi
+
+printf "  %-25s : %s\n" "Unique Visitors Today" "$VISITORS"
+printf "  %-25s : %s\n" "Total Requests" "$REQUESTS"
+printf "  %-25s : %s\n" "Likely Human Traffic" "$HUMAN_VISITORS"
+echo ""
+
+# Top Countries attacking today
+echo "  TOP ATTACK ORIGINS TODAY"
+echo "-----------------------------------------------------------------------"
+grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | \
+    grep '" 4[04][04] ' | awk '{print $1}' | sort -u | while read ip; do
+    [[ " $WHITELIST " =~ " $ip " ]] && continue
+    geoiplookup "$ip" 2>/dev/null | cut -d: -f2 | sed 's/^ //' | cut -d, -f2 | sed 's/^ //'
+done | sort | uniq -c | sort -rn | head -5 | while read count country; do
+    printf "  %-25s : %d attacks\n" "$country" "$count"
+done
+echo ""
+
+# System Health
+echo "  SYSTEM HEALTH"
+echo "-----------------------------------------------------------------------"
+LOAD=$(uptime | awk -F'load average:' '{print $2}')
+DISK=$(df -h / | tail -1 | awk '{print $5}')
+MEMORY=$(free -m | grep Mem | awk '{printf "%.1f%%", $3/$2 * 100}')
+NGINX_SIZE=$(du -h "$NGINX_LOG" 2>/dev/null | cut -f1)
+
+printf "  %-25s : %s\n" "Load Average" "$LOAD"
+printf "  %-25s : %s\n" "Disk Usage" "$DISK"
+printf "  %-25s : %s\n" "Memory Usage" "$MEMORY"
+printf "  %-25s : %s\n" "Nginx Log Size" "$NGINX_SIZE"
+echo ""
+
+# Attack Types Today
+echo "  ATTACK TYPES TODAY"
+echo "-----------------------------------------------------------------------"
+grep "$(date '+%Y-%m-%d')" "$BLOCKED_LOG" 2>/dev/null | \
+    sed 's/.*Reason: //' | cut -d' ' -f1-3 | sort | uniq -c | sort -rn | head -5 | \
+    while read count type; do
+        printf "  %-35s : %s\n" "$type" "$count"
+    done
+echo ""
+
+echo "  ROUTER EXPLOIT ATTEMPTS (Today)"
+echo "-----------------------------------------------------------------------"
+if [[ -f "$EXPLOIT_LOG" ]]; then
+    TODAY=$(date '+%d/%b/%Y')
+    EXPLOIT_COUNT=$(/bin/grep "$TODAY" "$EXPLOIT_LOG" 2>/dev/null | /usr/bin/wc -l)
+    if [[ $EXPLOIT_COUNT -gt 0 ]]; then
+        echo "  Boaform attacks    : $(/bin/grep "$TODAY" "$EXPLOIT_LOG" | /bin/grep -c "boaform")"
+        echo "  LuCI attempts      : $(/bin/grep "$TODAY" "$EXPLOIT_LOG" | /bin/grep -c "luci")"
+        echo "  GponForm probes    : $(/bin/grep "$TODAY" "$EXPLOIT_LOG" | /bin/grep -c "GponForm")"
+        echo "  CGI exploits       : $(/bin/grep "$TODAY" "$EXPLOIT_LOG" | /bin/grep -E -c "setup\.cgi|login\.cgi")"
+        echo "  Total blocked      : $EXPLOIT_COUNT attempts"
+    else
+        echo "  No router exploit attempts today"
+    fi
+else
+    echo "  Monitoring not yet initialized"
+fi
+echo ""
+
+echo "-----------------------------------------------------------------------"
+echo "  QUICK COMMANDS:"
+echo "  srun              - Run security scan      | user-sessions  - View user activity"
+echo "  security-alerts   - Recent threats         | session-watch  - Live monitoring"
+echo "  check-ip <IP>     - Investigate IP         | traffic-stats  - Traffic analysis"
+echo "======================================================================="

@@ -1,0 +1,123 @@
+#!/bin/bash
+# VPS Sentinel - Enhanced User Session Viewer
+
+CONF="/etc/sentinel/sentinel.conf"
+[ -f "$CONF" ] && source "$CONF" || { echo "Config not found: $CONF"; exit 1; }
+
+echo "======================================================================="
+echo "         USER SESSION VIEWER"
+echo "======================================================================="
+echo ""
+
+DATE_LOG=$(date +%d/%b/%Y)
+
+get_country() {
+    local ip=$1
+    if [ -f "/tmp/sentinel_ip_$ip" ]; then
+        cat "/tmp/sentinel_ip_$ip"
+    else
+        country=$(curl -s --max-time 2 "https://ipinfo.io/$ip/country" 2>/dev/null | tr -d '\n')
+        [ -z "$country" ] && country="??"
+        echo "$country" > "/tmp/sentinel_ip_$ip"
+        echo "$country"
+    fi
+}
+
+get_os() {
+    local ua="$1"
+    if echo "$ua" | grep -qi "Windows NT 10\|Windows NT 11"; then echo "Win"
+    elif echo "$ua" | grep -qi "Mac OS X"; then echo "Mac"
+    elif echo "$ua" | grep -qi "iPhone\|iPad"; then echo "iOS"
+    elif echo "$ua" | grep -qi "Android"; then echo "And"
+    elif echo "$ua" | grep -qi "Linux"; then echo "Lin"
+    elif echo "$ua" | grep -qi "bot\|crawler\|spider"; then echo "Bot"
+    else echo "?"
+    fi
+}
+
+get_browser() {
+    local ua="$1"
+    if echo "$ua" | grep -qi "Edg"; then echo "Edge"
+    elif echo "$ua" | grep -qi "Chrome" && ! echo "$ua" | grep -qi "Edg"; then echo "Chrome"
+    elif echo "$ua" | grep -qi "Firefox"; then echo "Firefox"
+    elif echo "$ua" | grep -qi "Safari" && ! echo "$ua" | grep -qi "Chrome"; then echo "Safari"
+    elif echo "$ua" | grep -qi "bot\|crawler\|spider\|scan"; then echo "Bot"
+    else echo "Other"
+    fi
+}
+
+is_malicious() {
+    local ip=$1
+    local logs="$2"
+
+    [[ " $WHITELIST " =~ " $ip " ]] && { echo "OK"; return; }
+
+    if iptables -L -n 2>/dev/null | grep -q "$ip.*DROP"; then
+        echo "BLOCKED"; return
+    fi
+
+    if echo "$logs" | grep -qE "admin|wp-|shell|cmd|exec|boaform|cgi-bin|\\\\x|SELECT|UNION|<script>"; then
+        echo "SUSPECT"; return
+    fi
+
+    if echo "$logs" | grep -qE "\.env|\.git|config\.php|wp-config|phpinfo|setup\.php|install\.php"; then
+        echo "SUSPECT"; return
+    fi
+
+    local error_count=$(echo "$logs" | grep -cE '" (4[0-9]{2}|5[0-9]{2}) ')
+    local total_count=$(echo "$logs" | wc -l)
+    if [ "$error_count" -gt 5 ] || ([ "$total_count" -gt 0 ] && [ "$error_count" -gt $((total_count / 2)) ]); then
+        echo "SUSPECT"; return
+    fi
+
+    echo "OK"
+}
+
+calc_duration() {
+    local first="$1" last="$2"
+    first_hour=$(echo "$first" | cut -d: -f1 | sed 's/^0*//')
+    first_min=$(echo "$first" | cut -d: -f2 | sed 's/^0*//')
+    last_hour=$(echo "$last" | cut -d: -f1 | sed 's/^0*//')
+    last_min=$(echo "$last" | cut -d: -f2 | sed 's/^0*//')
+    : ${first_hour:=0} ${first_min:=0} ${last_hour:=0} ${last_min:=0}
+    diff=$(( (last_hour * 60 + last_min) - (first_hour * 60 + first_min) ))
+    if [ $diff -le 0 ]; then echo "<1m"
+    elif [ $diff -lt 60 ]; then echo "${diff}m"
+    else echo "$((diff / 60))h$((diff % 60))m"
+    fi
+}
+
+echo "Today's User Sessions ($DATE_LOG):"
+echo "-----------------------------------------------------------------------"
+printf "%-7s %-15s %-3s %-3s %-7s %-5s %-5s %-6s %-5s %-25s\n" "Status" "IP Address" "CC" "OS" "Browser" "Reqs" "Pages" "Time" "Errs" "Entry Page"
+echo "-----------------------------------------------------------------------"
+
+VISITORS=$(grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | grep -vE "$WHITELIST_PATTERN" | awk '{print $1}' | sort -u)
+
+for ip in $VISITORS; do
+    [ -z "$ip" ] && continue
+    USER_LOGS=$(grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | grep "^$ip ")
+    REQUEST_COUNT=$(echo "$USER_LOGS" | wc -l)
+    ERROR_COUNT=$(echo "$USER_LOGS" | grep -cE '" (4[0-9]{2}|5[0-9]{2}) ')
+    UNIQUE_PAGES=$(echo "$USER_LOGS" | awk '{print $7}' | sort -u | wc -l)
+    FIRST_TIME=$(echo "$USER_LOGS" | head -1 | awk '{print $4}' | cut -d: -f2,3,4 | tr -d ']')
+    LAST_TIME=$(echo "$USER_LOGS" | tail -1 | awk '{print $4}' | cut -d: -f2,3,4 | tr -d ']')
+    DURATION=$(calc_duration "$FIRST_TIME" "$LAST_TIME")
+    USER_AGENT=$(echo "$USER_LOGS" | head -1 | awk -F'"' '{print $6}')
+    OS=$(get_os "$USER_AGENT")
+    BROWSER=$(get_browser "$USER_AGENT")
+    COUNTRY=$(get_country "$ip")
+    STATUS=$(is_malicious "$ip" "$USER_LOGS")
+    ENTRY_PAGE=$(echo "$USER_LOGS" | head -1 | awk '{print $7}' | cut -c1-25)
+
+    printf "%-7s %-15s %-3s %-3s %-7s %5d %5d %-6s %5d %-25s\n" \
+        "$STATUS" "$ip" "$COUNTRY" "$OS" "$BROWSER" "$REQUEST_COUNT" "$UNIQUE_PAGES" "$DURATION" "$ERROR_COUNT" "$ENTRY_PAGE"
+done
+
+echo "-----------------------------------------------------------------------"
+echo ""
+echo "Legend: BLOCKED=iptables blocked | SUSPECT=suspicious patterns | OK=clean"
+echo "Use 'check-ip <IP>' to investigate specific IPs"
+
+# Cleanup old cache files
+find /tmp -name "sentinel_ip_*" -mmin +60 -delete 2>/dev/null

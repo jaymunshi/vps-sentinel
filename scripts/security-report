@@ -1,0 +1,20 @@
+#!/bin/bash
+# VPS Sentinel - Generate Security Report
+
+CONF="/etc/sentinel/sentinel.conf"
+[ -f "$CONF" ] && source "$CONF" || { echo "Config not found: $CONF"; exit 1; }
+
+REPORT="/tmp/sentinel-report-$(date +%Y%m%d).txt"
+
+{
+    echo "Security Report for $(hostname) - $(date)"
+    echo "========================================"
+    echo ""
+    security-dashboard
+    echo ""
+    echo "Top Threats Today:"
+    echo "------------------"
+    threats | head -30
+} > "$REPORT"
+
+echo "Report saved to: $REPORT"

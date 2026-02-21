@@ -1,0 +1,36 @@
+#!/bin/bash
+# VPS Sentinel - 7-Day Traffic History
+
+CONF="/etc/sentinel/sentinel.conf"
+[ -f "$CONF" ] && source "$CONF" || { echo "Config not found: $CONF"; exit 1; }
+
+echo "======================================================================="
+echo "         TRAFFIC HISTORY (7 DAYS)"
+echo "======================================================================="
+echo ""
+
+for i in {0..6}; do
+    DATE=$(date -d "$i days ago" +%Y-%m-%d 2>/dev/null || date -v-${i}d +%Y-%m-%d 2>/dev/null)
+    DATE_LOG=$(date -d "$i days ago" +%d/%b/%Y 2>/dev/null || date -v-${i}d +%d/%b/%Y 2>/dev/null)
+
+    VISITORS=$(grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | grep -vE "$WHITELIST_PATTERN" | awk '{print $1}' | sort -u | wc -l)
+    REQUESTS=$(grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | grep -vE "$WHITELIST_PATTERN" | wc -l)
+
+    # Check archived logs
+    if [ -d /var/log/archive ]; then
+        ARCHIVE_VISITORS=$(zgrep "$DATE_LOG" /var/log/archive/*/nginx-access*.gz 2>/dev/null | grep -vE "$WHITELIST_PATTERN" | awk '{print $1}' | sort -u | wc -l)
+        ARCHIVE_REQUESTS=$(zgrep "$DATE_LOG" /var/log/archive/*/nginx-access*.gz 2>/dev/null | grep -vE "$WHITELIST_PATTERN" | wc -l)
+        VISITORS=$((VISITORS + ARCHIVE_VISITORS))
+        REQUESTS=$((REQUESTS + ARCHIVE_REQUESTS))
+    fi
+
+    if [ $i -eq 0 ]; then
+        echo "  Today ($DATE):"
+    else
+        echo "  $DATE:"
+    fi
+    echo "      Visitors: $VISITORS | Requests: $REQUESTS"
+done
+
+echo ""
+echo "======================================================================="

@@ -1,0 +1,86 @@
+#!/bin/bash
+# VPS Sentinel - Website Traffic Analysis
+
+CONF="/etc/sentinel/sentinel.conf"
+[ -f "$CONF" ] && source "$CONF" || { echo "Config not found: $CONF"; exit 1; }
+
+echo "======================================================================="
+echo "         WEBSITE TRAFFIC ANALYSIS"
+echo "======================================================================="
+echo ""
+
+if [ ! -s "$NGINX_LOG" ]; then
+    echo "  No traffic data yet (log is empty)"
+    exit 0
+fi
+
+TOTAL_UNIQUE=$(grep -vE "$WHITELIST_PATTERN" "$NGINX_LOG" 2>/dev/null | awk '{print $1}' | sort -u | wc -l)
+TOTAL_REQUESTS=$(grep -vE "$WHITELIST_PATTERN" "$NGINX_LOG" 2>/dev/null | wc -l)
+
+echo "  Overall Stats:"
+echo "   Unique Visitors: $TOTAL_UNIQUE"
+echo "   Total Requests: $TOTAL_REQUESTS"
+[ "$TOTAL_UNIQUE" -gt 0 ] && echo "   Average requests per visitor: $(( TOTAL_REQUESTS / TOTAL_UNIQUE ))"
+echo ""
+
+TODAY=$(date '+%d/%b/%Y')
+TODAY_UNIQUE=$(grep "$TODAY" "$NGINX_LOG" 2>/dev/null | grep -vE "$WHITELIST_PATTERN" | awk '{print $1}' | sort -u | wc -l)
+TODAY_REQUESTS=$(grep "$TODAY" "$NGINX_LOG" 2>/dev/null | grep -vE "$WHITELIST_PATTERN" | wc -l)
+
+echo "  Today's Traffic:"
+echo "   Unique Visitors: $TODAY_UNIQUE"
+echo "   Page Views: $TODAY_REQUESTS"
+echo ""
+
+HUMAN_AGENTS=$(grep -vE "$WHITELIST_PATTERN" "$NGINX_LOG" 2>/dev/null | \
+    grep -E "Mozilla.*Chrome|Mozilla.*Firefox|Mozilla.*Safari" | \
+    awk '{print $1}' | sort -u | wc -l)
+BOT_AGENTS=$(grep -vE "$WHITELIST_PATTERN" "$NGINX_LOG" 2>/dev/null | \
+    grep -iE "bot|spider|crawler|scraper" | \
+    awk '{print $1}' | sort -u | wc -l)
+
+echo "  Visitor Types:"
+echo "   Likely Humans: $HUMAN_AGENTS"
+echo "   Known Bots: $BOT_AGENTS"
+echo "   Unknown: $(( TOTAL_UNIQUE - HUMAN_AGENTS - BOT_AGENTS ))"
+echo ""
+
+echo "  Top 5 Visitors:"
+grep -vE "$WHITELIST_PATTERN" "$NGINX_LOG" 2>/dev/null | \
+    awk '{print $1}' | sort | uniq -c | sort -rn | head -5 | \
+    while read count ip; do echo "   $ip - $count requests"; done
+echo ""
+
+echo "  Top 5 Pages:"
+grep -vE "$WHITELIST_PATTERN" "$NGINX_LOG" 2>/dev/null | \
+    awk '{print $7}' | \
+    grep -vE "\.(css|js|jpg|jpeg|png|gif|ico|woff|woff2|svg)$" | \
+    grep -v "^[a-zA-Z].*:[0-9]" | \
+    grep "^/" | \
+    sort | uniq -c | sort -rn | head -5 | \
+    while read count page; do echo "   $page - $count views"; done
+echo ""
+
+echo "  Today's Traffic by Hour:"
+grep "$TODAY" "$NGINX_LOG" 2>/dev/null | grep -vE "$WHITELIST_PATTERN" | \
+    awk '{print $4}' | cut -d: -f2 | sort | uniq -c | \
+    awk '{printf "   %02d:00 - %d visits\n", $2, $1}'
+echo ""
+
+echo "  Response Codes:"
+grep -vE "$WHITELIST_PATTERN" "$NGINX_LOG" 2>/dev/null | \
+    awk '{print $9}' | grep -E '^[0-9]+$' | sort | uniq -c | sort -rn | head -5 | \
+    while read count code; do
+        case $code in
+            200) echo "   $code OK: $count" ;;
+            301|302) echo "   $code Redirect: $count" ;;
+            404) echo "   $code Not Found: $count" ;;
+            403) echo "   $code Forbidden: $count" ;;
+            444) echo "   $code Dropped: $count" ;;
+            500|502|503) echo "   $code Error: $count" ;;
+            *) echo "   $code: $count" ;;
+        esac
+    done
+
+echo ""
+echo "======================================================================="

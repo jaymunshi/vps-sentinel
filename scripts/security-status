@@ -1,0 +1,35 @@
+#!/bin/bash
+# VPS Sentinel - Compact Security Status
+
+CONF="/etc/sentinel/sentinel.conf"
+[ -f "$CONF" ] && source "$CONF" || { echo "Config not found: $CONF"; exit 1; }
+
+[ -t 1 ] && clear
+
+echo "=== SECURITY STATUS ==="
+echo "Time: $(date)"
+echo
+
+echo "=== ACTIVE ATTACKS ==="
+echo "SSH Failed Attempts (recent):"
+grep "Failed password\|Invalid user" "$AUTH_LOG" 2>/dev/null | tail -20 | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort | uniq -c | sort -nr | head -5
+
+echo -e "\nWeb Scanners (recent):"
+tail -1000 "$NGINX_LOG" 2>/dev/null | grep -E "(\.env|\.git|wp-admin|phpmyadmin)" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort | uniq -c | sort -nr | head -5
+
+echo -e "\n=== BLOCKED IPS ==="
+echo "Total blocked: $(iptables -L INPUT -n 2>/dev/null | grep DROP | wc -l)"
+echo "Recent blocks:"
+tail -5 "$BLOCKED_LOG" 2>/dev/null || echo "No blocks logged yet"
+
+echo -e "\n=== FAIL2BAN STATUS ==="
+fail2ban-client status 2>/dev/null | grep "Number of jail"
+echo "SSH jail: $(fail2ban-client status sshd 2>/dev/null | grep "Currently banned:" || echo "Not active")"
+echo "Nginx jail: $(fail2ban-client status nginx-scanner 2>/dev/null | grep "Currently banned:" || echo "Not active")"
+
+echo -e "\n=== SYSTEM LOAD ==="
+uptime
+echo "Connections: $(ss -tan 2>/dev/null | grep ESTAB | wc -l)"
+
+echo -e "\n=== TOP ATTACKERS (24h) ==="
+grep "$(date +%Y-%m-%d)" "$BLOCKED_LOG" 2>/dev/null | awk '{print $4}' | sort | uniq -c | sort -nr | head -5 || echo "No data yet"

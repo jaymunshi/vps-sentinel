@@ -1,0 +1,19 @@
+#!/bin/bash
+# VPS Sentinel - Unblock IP from all blocklists
+
+IP=$1
+if [ -z "$IP" ]; then
+    echo "Usage: unblock-ip <IP_ADDRESS>"
+    exit 1
+fi
+
+echo "  Unblocking IP: $IP"
+
+sudo iptables -D INPUT -s "$IP" -j DROP 2>/dev/null && echo "  Removed from iptables"
+fail2ban-client unban "$IP" --all 2>/dev/null && echo "  Unbanned from fail2ban"
+
+if iptables -L -n 2>/dev/null | grep -q "$IP"; then
+    echo "  IP may still have other blocks"
+else
+    echo "  IP is now unblocked"
+fi

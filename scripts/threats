@@ -1,0 +1,118 @@
+#!/bin/bash
+# VPS Sentinel - Active Threats & Suspicious Traffic
+
+CONF="/etc/sentinel/sentinel.conf"
+[ -f "$CONF" ] && source "$CONF" || { echo "Config not found: $CONF"; exit 1; }
+
+echo "======================================================================="
+echo "         ACTIVE THREATS & SUSPICIOUS TRAFFIC"
+echo "======================================================================="
+echo ""
+
+DATE_LOG=$(date +%d/%b/%Y)
+
+# Function to get country code for an IP
+get_country() {
+    local ip=$1
+    local country=$(curl -s --max-time 2 "https://ipinfo.io/$ip/country" 2>/dev/null | head -1 | tr -d '\n')
+    [ -z "$country" ] || [[ "$country" == *"error"* ]] && country="??"
+    echo "$country"
+}
+
+# Function to check if IP is blocked
+is_blocked() {
+    local ip=$1
+    if sudo fail2ban-client banned 2>/dev/null | grep -q "$ip"; then
+        return 0
+    fi
+    if sudo iptables -L -n 2>/dev/null | grep -q "$ip.*DROP\|$ip.*REJECT"; then
+        return 0
+    fi
+    return 1
+}
+
+echo "  BLOCKED IPs (Recent):"
+echo "-----------------------------------------------------------------------"
+
+grep "$(date '+%Y-%m-%d')" "$BLOCKED_LOG" 2>/dev/null | tail -10 | while read line; do
+    IP=$(echo "$line" | awk -F'Blocked: ' '{print $2}' | awk '{print $1}')
+    REASON=$(echo "$line" | cut -d'|' -f2 | sed 's/Reason: //' | cut -d'-' -f1)
+    TIME=$(echo "$line" | cut -d']' -f1 | cut -d' ' -f2)
+    COUNTRY=$(get_country "$IP")
+    printf "%s  %-15s [%s] %s\n" "$TIME" "$IP" "$COUNTRY" "$REASON"
+done
+
+echo ""
+echo "  FAIL2BAN BLOCKS (Today):"
+echo "-----------------------------------------------------------------------"
+grep "$(date '+%Y-%m-%d')" "$F2B_LOG" 2>/dev/null | grep "Ban " | tail -10 | while read line; do
+    TIME=$(echo "$line" | awk '{print $2}' | cut -d',' -f1)
+    JAIL=$(echo "$line" | sed -n 's/.*\[\([^]]*\)\] \(Ban\|Restore Ban\) .*/\1/p')
+    IP=$(echo "$line" | awk '{print $NF}')
+    COUNTRY=$(get_country "$IP")
+    printf "%s  %-15s [%s] jail: %s\n" "$TIME" "$IP" "$COUNTRY" "$JAIL"
+done
+
+echo ""
+echo "  SUSPICIOUS ACTIVITY TODAY (Not Blocked Yet):"
+echo "-----------------------------------------------------------------------"
+
+grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | \
+    grep -E "admin|wp-|shell|cmd|exec|boaform|cgi-bin|\.env|SELECT|UNION|\.git|phpinfo|config\.php" | \
+    grep -vE "$WHITELIST_PATTERN" | \
+    while read line; do
+        IP=$(echo "$line" | awk '{print $1}')
+        URL=$(echo "$line" | awk '{print $7}' | cut -c1-50)
+        TIME=$(echo "$line" | awk '{print $4}' | cut -d: -f2,3,4 | tr -d ']')
+
+        is_blocked "$IP" && continue
+
+        COUNTRY=$(get_country "$IP")
+        printf "%s %-15s [%s] %s\n" "$TIME" "$IP" "$COUNTRY" "$URL"
+    done | sort -u | head -20
+
+echo ""
+echo "  TOP ATTACK PATTERNS TODAY:"
+echo "-----------------------------------------------------------------------"
+
+grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | \
+    grep -vE "$WHITELIST_PATTERN" | \
+    awk '{print $7}' | \
+    grep -E "admin|wp-|shell|cmd|\.env|cgi-bin|luci" | \
+    sed 's/?.*//' | \
+    sort | uniq -c | sort -rn | head -10 | \
+    while read count pattern; do
+        printf "  %4d attempts: %s\n" "$count" "$pattern"
+    done
+
+echo ""
+echo "  THREAT SUMMARY:"
+echo "-----------------------------------------------------------------------"
+
+IPTABLES_BLOCKED=$(sudo iptables -L -n 2>/dev/null | grep -c "DROP\|REJECT" || echo 0)
+FAIL2BAN_BLOCKED=$(sudo fail2ban-client banned 2>/dev/null | grep -oP '\d+\.\d+\.\d+\.\d+' | sort -u | wc -l || echo 0)
+TOTAL_BLOCKED=$((IPTABLES_BLOCKED + FAIL2BAN_BLOCKED))
+
+TODAY_SUSPICIOUS=$(grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | \
+    grep -vE "$WHITELIST_PATTERN" | \
+    grep -cE "admin|wp-|shell|cmd|exec|boaform|cgi-bin|\.env")
+
+TODAY_BLOCKS=$(grep "$(date '+%Y-%m-%d')" "$BLOCKED_LOG" 2>/dev/null | wc -l)
+TODAY_F2B_BLOCKS=$(grep "$(date '+%Y-%m-%d')" "$F2B_LOG" 2>/dev/null | grep -c "Ban " || echo 0)
+
+echo "  Total IPs Blocked: $TOTAL_BLOCKED (iptables: $IPTABLES_BLOCKED, fail2ban: $FAIL2BAN_BLOCKED)"
+echo "  Suspicious Requests Today: $TODAY_SUSPICIOUS"
+echo "  New Blocks Today: $((TODAY_BLOCKS + TODAY_F2B_BLOCKS)) (manual: $TODAY_BLOCKS, fail2ban: $TODAY_F2B_BLOCKS)"
+
+echo ""
+echo "  Fail2ban Jail Status:"
+for jail in nginx-exploits nginx-404 nginx-scanner sshd; do
+    if sudo fail2ban-client status "$jail" &>/dev/null; then
+        banned=$(sudo fail2ban-client status "$jail" 2>/dev/null | grep "Currently banned" | awk '{print $4}')
+        printf "    %-20s: %3s banned\n" "$jail" "$banned"
+    fi
+done
+
+echo ""
+echo "  Use 'check-ip <IP>' to investigate | 'srun' to block active threats"
+echo "======================================================================="

@@ -1,0 +1,17 @@
+#!/bin/bash
+# VPS Sentinel - Manual Security Scan Trigger
+
+CONF="/etc/sentinel/sentinel.conf"
+[ -f "$CONF" ] && source "$CONF" || { echo "Config not found: $CONF"; exit 1; }
+
+echo "Starting manual security scan..."
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Manual scan initiated by user" | tee -a "$SENTINEL_LOG"
+
+/usr/local/bin/sentinel-monitor.sh
+
+echo "Manual security scan complete!"
+echo ""
+echo "Summary:"
+echo "  Blocked IPs: $(iptables -L -n | grep -c "DROP\|REJECT")"
+echo "  New blocks today: $(grep "$(date '+%Y-%m-%d')" "$BLOCKED_LOG" 2>/dev/null | wc -l)"
+echo "  Check logs at: $SENTINEL_LOG"

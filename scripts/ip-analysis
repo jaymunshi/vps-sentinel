@@ -1,0 +1,147 @@
+#!/bin/bash
+# VPS Sentinel - IP Analysis & Security Report
+
+CONF="/etc/sentinel/sentinel.conf"
+[ -f "$CONF" ] && source "$CONF" || { echo "Config not found: $CONF"; exit 1; }
+
+[ -t 1 ] && clear
+
+echo "======================================================================="
+echo "         IP ANALYSIS & SECURITY REPORT"
+echo "======================================================================="
+echo ""
+echo "Generated: $(date)"
+echo "Server: $(hostname)"
+echo "Uptime: $(uptime -p 2>/dev/null || uptime)"
+echo ""
+
+get_country() {
+    local ip=$1
+    whois "$ip" 2>/dev/null | grep -i country | head -1 | awk '{print $2}' 2>/dev/null || echo "Unknown"
+}
+
+check_threat_category() {
+    local ip=$1
+    if [[ $ip =~ ^94\. ]] || [[ $ip =~ ^185\. ]] || [[ $ip =~ ^167\. ]]; then
+        echo "VPS/Cloud Scanner"
+    elif [[ $ip =~ ^103\. ]] || [[ $ip =~ ^27\. ]] || [[ $ip =~ ^43\. ]]; then
+        echo "Asian Bot Network"
+    elif [[ $ip =~ ^14\. ]] || [[ $ip =~ ^116\. ]] || [[ $ip =~ ^125\. ]]; then
+        echo "Chinese Scanner"
+    elif [[ $ip =~ ^182\. ]] || [[ $ip =~ ^197\. ]]; then
+        echo "Shell Injection Bot"
+    elif [[ $ip =~ ^159\. ]] || [[ $ip =~ ^40\. ]]; then
+        echo "Protocol Attack Bot"
+    else
+        echo "Generic Attacker"
+    fi
+}
+
+echo "  SECURITY OVERVIEW"
+echo "-----------------------------------------------------------------------"
+total_fail2ban=$(fail2ban-client status 2>/dev/null | grep "Number of jail" | awk '{print $4}' || echo "0")
+total_iptables_drops=$(iptables -L INPUT -n 2>/dev/null | grep DROP | wc -l)
+total_security_logs=$(wc -l < "$BLOCKED_LOG" 2>/dev/null || echo "0")
+total_400_errors=$(grep " 400 " "$NGINX_LOG" 2>/dev/null | wc -l || echo "0")
+
+echo "  Active Protection Layers:"
+echo "  - Fail2ban Jails: $total_fail2ban active"
+echo "  - iptables DROP rules: $total_iptables_drops"
+echo "  - Security Monitor logs: $total_security_logs entries"
+echo "  - nginx 400 Blocks: $total_400_errors today"
+echo ""
+
+echo "  CURRENTLY BANNED IPs (FAIL2BAN)"
+echo "-----------------------------------------------------------------------"
+
+jails=$(fail2ban-client status 2>/dev/null | grep "Jail list" | cut -d: -f2 | tr ',' ' ')
+
+for jail in $jails; do
+    echo ""
+    echo "  $jail Jail:"
+    jail_status=$(fail2ban-client status "$jail" 2>/dev/null)
+    currently_banned=$(echo "$jail_status" | grep "Currently banned:" | awk '{print $3}')
+    total_banned=$(echo "$jail_status" | grep "Total banned:" | awk '{print $3}')
+
+    if [[ "${currently_banned:-0}" -gt 0 ]]; then
+        echo "  Currently banned: $currently_banned IPs | Total banned: $total_banned IPs"
+        banned_ips=$(echo "$jail_status" | grep "Banned IP list:" | cut -d: -f2)
+
+        printf "  %-18s %-20s %-15s %s\n" "IP Address" "Threat Category" "Country" "Notes"
+        for ip in $banned_ips; do
+            country=$(get_country "$ip")
+            category=$(check_threat_category "$ip")
+            if [[ "$jail" == "sshd"* ]]; then
+                attempts=$(grep "Failed password.*$ip" "$AUTH_LOG" 2>/dev/null | wc -l)
+                notes="$attempts SSH attempts"
+            elif [[ "$jail" == "nginx"* ]]; then
+                attacks=$(grep "$ip" "$NGINX_LOG" 2>/dev/null | wc -l)
+                notes="$attacks web requests"
+            else
+                notes="Multiple violations"
+            fi
+            printf "  %-18s %-20s %-15s %s\n" "$ip" "$category" "$country" "$notes"
+        done
+    else
+        echo "  No currently banned IPs"
+    fi
+done
+
+echo ""
+echo "  RECENT ATTACK PATTERNS (Last 24h)"
+echo "-----------------------------------------------------------------------"
+
+echo "  SSH Attack Patterns:"
+echo "  Top SSH attackers (last 24h):"
+grep "$(date +%b.*%d)" "$AUTH_LOG" 2>/dev/null | grep "Failed password" | awk '{print $11}' | sort | uniq -c | sort -nr | head -5 | while read count ip; do
+    country=$(get_country "$ip")
+    category=$(check_threat_category "$ip")
+    printf "  %-18s %-20s %-15s %s attempts\n" "$ip" "$category" "$country" "$count"
+done
+
+echo ""
+echo "  SECURITY METRICS & TRENDS"
+echo "-----------------------------------------------------------------------"
+
+echo "  Attack Volume (Last 7 Days):"
+for i in {6..0}; do
+    date_check=$(date -d "$i days ago" +%Y-%m-%d 2>/dev/null || date -v-${i}d +%Y-%m-%d 2>/dev/null)
+    ssh_attacks=$(grep "$date_check" "$AUTH_LOG" 2>/dev/null | grep "Failed password" | wc -l)
+    web_attacks=$(grep "$date_check" "$NGINX_LOG" 2>/dev/null | grep " 400 " | wc -l)
+    echo "  $date_check: SSH: $ssh_attacks, Web: $web_attacks attacks"
+done
+
+echo ""
+echo "  Attack Methods Detected:"
+echo "  - Directory Traversal: $(grep -c "\.\./" "$NGINX_LOG" 2>/dev/null || echo 0)"
+echo "  - Shell Injection: $(grep -c "/shell" "$NGINX_LOG" 2>/dev/null || echo 0)"
+echo "  - Protocol Confusion: $(grep -c "PRI \* HTTP/2.0" "$NGINX_LOG" 2>/dev/null || echo 0)"
+echo "  - Binary Exploits: $(grep -c "\\\\x" "$NGINX_LOG" 2>/dev/null || echo 0)"
+echo "  - Admin Panel Probes: $(grep -cE "(wp-admin|phpmyadmin|admin)" "$NGINX_LOG" 2>/dev/null || echo 0)"
+
+echo ""
+echo "  SECURITY STATUS"
+echo "-----------------------------------------------------------------------"
+
+if systemctl is-active --quiet sentinel.timer 2>/dev/null; then
+    echo "  Sentinel monitor is active"
+else
+    echo "  Sentinel monitor is not running"
+fi
+
+if systemctl is-active --quiet fail2ban 2>/dev/null; then
+    echo "  Fail2ban is active"
+else
+    echo "  Fail2ban is not running"
+fi
+
+recent_attacks=$(grep "$(date +%Y-%m-%d)" "$AUTH_LOG" 2>/dev/null | grep "Failed password" | wc -l)
+if [[ "${recent_attacks:-0}" -gt 50 ]]; then
+    echo "  High attack volume today ($recent_attacks SSH attempts)"
+else
+    echo "  Attack volume is manageable ($recent_attacks SSH attempts today)"
+fi
+
+echo ""
+echo "Report generated: $(date)"
+echo "======================================================================="
