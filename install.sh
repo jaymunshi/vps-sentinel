@@ -65,8 +65,10 @@ cp "$SCRIPT_DIR/sentinel.conf" /etc/sentinel/sentinel.conf
 sed -i "s/^MY_IP=\"\"/MY_IP=\"$DETECTED_IP\"/" /etc/sentinel/sentinel.conf
 sed -i "s/^SERVER_IP=\"\"/SERVER_IP=\"$DETECTED_SERVER_IP\"/" /etc/sentinel/sentinel.conf
 
-# Create empty permanent blacklist if not exists
+# Create empty permanent blacklist and log files if not exists
 touch /etc/sentinel/permanent_blacklist.txt
+touch /var/log/sentinel/sentinel.log
+touch /var/log/sentinel/blocked_ips.log
 echo "  Done."
 
 # 3. Install scripts

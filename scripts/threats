@@ -89,16 +89,16 @@ echo ""
 echo "  THREAT SUMMARY:"
 echo "-----------------------------------------------------------------------"
 
-IPTABLES_BLOCKED=$(sudo iptables -L -n 2>/dev/null | grep -c "DROP\|REJECT" || echo 0)
-FAIL2BAN_BLOCKED=$(sudo fail2ban-client banned 2>/dev/null | grep -oP '\d+\.\d+\.\d+\.\d+' | sort -u | wc -l || echo 0)
-TOTAL_BLOCKED=$((IPTABLES_BLOCKED + FAIL2BAN_BLOCKED))
+IPTABLES_BLOCKED=$(sudo iptables-save 2>/dev/null | grep -c '\-j DROP'; true)
+FAIL2BAN_BLOCKED=$(sudo fail2ban-client banned 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort -u | wc -l)
+TOTAL_BLOCKED=$(( ${IPTABLES_BLOCKED:-0} + ${FAIL2BAN_BLOCKED:-0} ))
 
 TODAY_SUSPICIOUS=$(grep "$DATE_LOG" "$NGINX_LOG" 2>/dev/null | \
     grep -vE "$WHITELIST_PATTERN" | \
     grep -cE "admin|wp-|shell|cmd|exec|boaform|cgi-bin|\.env")
 
 TODAY_BLOCKS=$(grep "$(date '+%Y-%m-%d')" "$BLOCKED_LOG" 2>/dev/null | wc -l)
-TODAY_F2B_BLOCKS=$(grep "$(date '+%Y-%m-%d')" "$F2B_LOG" 2>/dev/null | grep -c "Ban " || echo 0)
+TODAY_F2B_BLOCKS=$(grep "$(date '+%Y-%m-%d')" "$F2B_LOG" 2>/dev/null | grep -c "Ban "; true)
 
 echo "  Total IPs Blocked: $TOTAL_BLOCKED (iptables: $IPTABLES_BLOCKED, fail2ban: $FAIL2BAN_BLOCKED)"
 echo "  Suspicious Requests Today: $TODAY_SUSPICIOUS"
