@@ -100,7 +100,7 @@ The installer handles all other dependencies (`fail2ban`, `geoip-bin`, `geoip-da
 ## Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/vps-sentinel.git
+git clone https://github.com/jaymunshi/vps-sentinel.git
 cd vps-sentinel
 sudo ./install.sh
 ```
